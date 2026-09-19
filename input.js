@@ -38,6 +38,9 @@ class InputManager {
     // Manual test state
     this.isManualBlowing = false;
 
+    // Gesture wind state
+    this.gestureIntensity = 0.0;
+
     // DOM References
     this.elIntensityBar = document.getElementById('intensity-bar');
     this.elIntensityText = document.getElementById('intensity-text');
@@ -47,11 +50,25 @@ class InputManager {
     this.elBtnSerial = document.getElementById('btn-serial');
     this.elBtnSerialText = document.getElementById('btn-serial-text');
     this.elBtnMic = document.getElementById('btn-mic');
+    this.elBtnMicText = document.getElementById('btn-mic-text');
     this.elInteractionHint = document.getElementById('interaction-hint');
 
     this.setupManualListeners();
     this.initAutoSerial();
     this.connectServerBridge();
+  }
+
+  isLocalHost() {
+    return (
+      window.location.hostname === 'localhost' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === '[::1]'
+    );
+  }
+
+  addGestureWind(amount) {
+    this.gestureIntensity = Math.min(1.0, Math.max(this.gestureIntensity, amount));
+    this.hideHint();
   }
 
   /**
@@ -62,7 +79,10 @@ class InputManager {
       if (e.code === 'Space' && !e.repeat) {
         this.isManualBlowing = true;
         this.hideHint();
-        if (window.soundEngine) window.soundEngine.init();
+        if (window.soundEngine) {
+          window.soundEngine.init();
+          window.soundEngine.resume();
+        }
       }
     });
 
@@ -77,7 +97,10 @@ class InputManager {
       manualBtn.addEventListener('mousedown', () => {
         this.isManualBlowing = true;
         this.hideHint();
-        if (window.soundEngine) window.soundEngine.init();
+        if (window.soundEngine) {
+          window.soundEngine.init();
+          window.soundEngine.resume();
+        }
       });
       window.addEventListener('mouseup', () => {
         this.isManualBlowing = false;
@@ -86,7 +109,10 @@ class InputManager {
         e.preventDefault();
         this.isManualBlowing = true;
         this.hideHint();
-        if (window.soundEngine) window.soundEngine.init();
+        if (window.soundEngine) {
+          window.soundEngine.init();
+          window.soundEngine.resume();
+        }
       }, { passive: false });
       window.addEventListener('touchend', () => {
         this.isManualBlowing = false;
@@ -107,6 +133,18 @@ class InputManager {
    * =========================================================================
    */
   connectServerBridge() {
+    // Only attempt local python server bridge when running locally
+    if (!this.isLocalHost()) {
+      // In web hosting (Netlify, etc.), set up default web interactive indicator
+      if (!this.serialPort) {
+        this.updateSerialUI(false, 'Ready');
+        if (this.elBoardLabel) {
+          this.elBoardLabel.textContent = 'Web Sensor Mode';
+        }
+      }
+      return;
+    }
+
     try {
       this.bridgeEventSource = new EventSource('/api/serial-stream');
 
@@ -120,6 +158,10 @@ class InputManager {
       };
 
       this.bridgeEventSource.onerror = () => {
+        if (this.bridgeEventSource) {
+          this.bridgeEventSource.close();
+          this.bridgeEventSource = null;
+        }
         if (this.bridgeConnected && !this.serialPort) {
           this.bridgeConnected = false;
           this.isSerialConnected = false;
@@ -166,8 +208,10 @@ class InputManager {
   async autoConnectSerial(port) {
     if (this.isSerialConnected && this.serialPort) return;
     try {
-      // Pause python bridge so WebSerial gets exclusive hardware access
-      await fetch('/api/release-serial').catch(() => {});
+      // Pause python bridge so WebSerial gets exclusive hardware access (only if local)
+      if (this.isLocalHost()) {
+        await fetch('/api/release-serial').catch(() => {});
+      }
 
       this.serialPort = port || (await navigator.serial.getPorts())[0];
       if (!this.serialPort) return;
@@ -180,27 +224,36 @@ class InputManager {
     } catch (e) {
       console.warn('Auto-connect serial note:', e);
       // Resume python bridge if WebSerial couldn't claim it
-      await fetch('/api/resume-serial').catch(() => {});
+      if (this.isLocalHost()) {
+        await fetch('/api/resume-serial').catch(() => {});
+      }
     }
   }
 
   async toggleWebSerial() {
-    if (window.soundEngine) window.soundEngine.init();
+    if (window.soundEngine) {
+      window.soundEngine.init();
+      window.soundEngine.resume();
+    }
 
     if (this.serialPort && this.isSerialConnected) {
       await this.disconnectSerial();
-      await fetch('/api/resume-serial').catch(() => {});
+      if (this.isLocalHost()) {
+        await fetch('/api/resume-serial').catch(() => {});
+      }
       return;
     }
 
     if (!('serial' in navigator)) {
-      alert('WebSerial is supported in Google Chrome, Microsoft Edge, and Opera.\nWhen running via the local server on Mac, hardware auto-connects automatically!');
+      alert('WebSerial is supported on desktop Google Chrome, Microsoft Edge, and Opera.\nFor mobile or wireless devices, swipe across the screen or use Breath Microphone to interact!');
       return;
     }
 
     try {
       // Tell backend server to release serial port so browser WebSerial has exclusive access
-      await fetch('/api/release-serial').catch(() => {});
+      if (this.isLocalHost()) {
+        await fetch('/api/release-serial').catch(() => {});
+      }
 
       this.serialPort = await navigator.serial.requestPort();
       await this.serialPort.open({ baudRate: 115200 });
@@ -213,9 +266,11 @@ class InputManager {
     } catch (err) {
       console.error('Serial connection error:', err);
       // Resume server bridge if browser connection wasn't established
-      await fetch('/api/resume-serial').catch(() => {});
+      if (this.isLocalHost()) {
+        await fetch('/api/resume-serial').catch(() => {});
+      }
       if (!this.bridgeConnected) {
-        this.updateSerialUI(false, 'Failed to connect');
+        this.updateSerialUI(false, this.isLocalHost() ? 'Failed to connect' : 'Ready');
       }
     }
   }
@@ -236,7 +291,7 @@ class InputManager {
     this.isSerialConnected = false;
     this.triggerState = 0;
     this.gpio32State = 0;
-    this.updateSerialUI(false, 'Disconnected');
+    this.updateSerialUI(false, this.isLocalHost() ? 'Disconnected' : 'Ready');
   }
 
   updateSerialUI(connected, label) {
@@ -414,7 +469,10 @@ class InputManager {
    * =========================================================================
    */
   async toggleMicrophone() {
-    if (window.soundEngine) window.soundEngine.init();
+    if (window.soundEngine) {
+      window.soundEngine.init();
+      window.soundEngine.resume();
+    }
 
     if (this.isMicActive) {
       this.stopMicrophone();
@@ -427,6 +485,9 @@ class InputManager {
 
       const AudioContext = window.AudioContext || window.webkitAudioContext;
       this.audioCtx = new AudioContext();
+      if (this.audioCtx.state === 'suspended') {
+        await this.audioCtx.resume();
+      }
 
       const source = this.audioCtx.createMediaStreamSource(stream);
 
@@ -446,10 +507,11 @@ class InputManager {
 
       this.isMicActive = true;
       if (this.elBtnMic) this.elBtnMic.classList.add('active');
+      if (this.elBtnMicText) this.elBtnMicText.textContent = 'Mute Mic';
       this.hideHint();
     } catch (err) {
       console.error('Microphone access denied or failed:', err);
-      alert('Microphone access was denied. Please allow mic permissions in your browser to use breath detection.');
+      alert('Microphone access was denied or not supported. You can still swipe on the screen or drag with mouse to blow seeds!');
     }
   }
 
@@ -459,11 +521,12 @@ class InputManager {
       this.micStream = null;
     }
     if (this.audioCtx) {
-      this.audioCtx.close();
+      this.audioCtx.close().catch(() => {});
       this.audioCtx = null;
     }
     this.isMicActive = false;
     if (this.elBtnMic) this.elBtnMic.classList.remove('active');
+    if (this.elBtnMicText) this.elBtnMicText.textContent = 'Breath (Mic)';
   }
 
   sampleMicIntensity() {
@@ -507,6 +570,14 @@ class InputManager {
     // 3. Manual keyboard/mouse test
     if (this.isManualBlowing) {
       target = Math.max(target, 0.95);
+    }
+
+    // 4. Touch & Mouse gesture wind
+    if (this.gestureIntensity > 0.01) {
+      target = Math.max(target, this.gestureIntensity);
+      this.gestureIntensity *= 0.88;
+    } else {
+      this.gestureIntensity = 0;
     }
 
     // Smooth physics interpolation

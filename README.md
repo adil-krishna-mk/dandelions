@@ -2,6 +2,8 @@
 
 An exhibition-grade, fully **software-based** interactive digital art installation inspired by teamLab sensory exhibitions. **Lumina Bloom** recreates the authentic physical and visual sensation of blowing dandelion seeds into the wind using pure browser technologies — **zero hardware, microcontrollers, or external sensors required**.
 
+Detailed architecture diagrams and software pipelines are documented in [WORKFLOW.md](file:///Users/adilkrishna/useless2/WORKFLOW.md).
+
 ---
 
 ## Highlights
@@ -65,8 +67,8 @@ Running a local web server ensures optimal Web Audio API and microphone permissi
 # Using Python 3
 python3 -m http.server 8080
 
-# Or using Node.js / npx
-npx serve .
+# Or using the included dual-stack server
+python3 server.py
 ```
 
 Then navigate to:
@@ -88,3 +90,4 @@ http://localhost:8080
 - **Audio Synthesis**: Native Web Audio API (Oscillators, Biquad Filters, Gain Envelopes, Reverb Simulation).
 - **Input Processing**: Web Audio AnalyserNode FFT / RMS envelope detection for microphone breath analysis.
 - **Styling**: Modern CSS3 Glassmorphism, custom typography (*Plus Jakarta Sans*, *Outfit*), and responsive auto-hiding HUD.
+- **Architecture & Workflow**: Refer to [WORKFLOW.md](file:///Users/adilkrishna/useless2/WORKFLOW.md) for full subsystem diagrams.

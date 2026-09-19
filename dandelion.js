@@ -295,7 +295,7 @@ class DandelionFlower {
     return total;
   }
 
-  update(dt, windPower, windField, width, height) {
+  update(dt, windPower, windField, width, height, pointerWind = null) {
     this.swayPhase += dt * this.swaySpeed;
 
     // Stem kinematics: gentle ambient sway + reaction to breath wind
@@ -309,7 +309,58 @@ class DandelionFlower {
       this.angles[i] += (targetAngle - this.angles[i]) * 0.12;
     }
 
-    // Check seed detachment when wind is present (progressive aerodynamic drag accumulation)
+    // Localized touch & mouse cursor wind interaction
+    if (pointerWind && pointerWind.active && pointerWind.speed > 60) {
+      const headPos = this.getHeadPosition();
+      const dx = pointerWind.x - headPos.x;
+      const dy = pointerWind.y - headPos.y;
+      const dist = Math.hypot(dx, dy);
+      const hitRadius = this.headRadius * 2.8 + (pointerWind.isDown ? 75 : 45);
+
+      if (dist < hitRadius) {
+        const proximity = 1.0 - (dist / hitRadius);
+        const swipeDir = Math.sign(pointerWind.vx) || 1;
+        const pushForce = proximity * Math.min(0.4, (pointerWind.speed / 1200));
+        this.angles[this.numSegments - 1] += swipeDir * pushForce * 0.45;
+
+        if (this.state === 'bloomed') {
+          let remainingAttached = 0;
+          const difficulty = window.dandelionApp ? window.dandelionApp.difficultyMultiplier : 1.0;
+          const swipePower = Math.min(1.0, (pointerWind.speed / 600)) * (pointerWind.isDown ? 1.35 : 1.0);
+
+          for (const seed of this.seeds) {
+            if (!seed.isAttached) continue;
+
+            const threshold = seed.baseStrength * difficulty;
+            if (swipePower > threshold * 0.42) {
+              seed.looseness += dt * (swipePower - threshold * 0.38) * 7.0;
+              if (seed.looseness >= 0.75) {
+                const burstVx = (pointerWind.vx * 0.005) + (Math.random() - 0.5) * 2.2;
+                const burstVy = (pointerWind.vy * 0.005) - (1.6 + Math.random() * 2.0);
+                seed.detach(burstVx, burstVy);
+                this.freeSeeds.push(seed);
+                if (window.dandelionApp) window.dandelionApp.onSeedBlown();
+                if (window.soundEngine) window.soundEngine.playSeedReleaseChime();
+              } else {
+                remainingAttached++;
+              }
+            } else {
+              remainingAttached++;
+            }
+          }
+
+          if (remainingAttached < 3) {
+            this.state = 'bare';
+            this.regrowthTimer = 0;
+            if (window.dandelionApp) {
+              window.dandelionApp.onFlowerCleared(this);
+            }
+          }
+        }
+      }
+    }
+
+    // Check seed detachment when general wind (breath / simulated) is present
     if (this.state === 'bloomed' && windPower > 0.05) {
       let remainingAttached = 0;
       const difficulty = window.dandelionApp ? window.dandelionApp.difficultyMultiplier : 1.0;
@@ -330,6 +381,7 @@ class DandelionFlower {
             seed.detach(windPower * 3.2, -windPower * 3.6);
             this.freeSeeds.push(seed);
             if (window.dandelionApp) window.dandelionApp.onSeedBlown();
+            if (window.soundEngine) window.soundEngine.playSeedReleaseChime();
           } else {
             remainingAttached++;
           }
@@ -691,6 +743,20 @@ class DandelionGardenApp {
     this.lastActivityTime = performance.now();
     this.autoHideEnabled = true;
 
+    // Pointer & Touch Wind Tracking State
+    this.pointer = {
+      x: 0,
+      y: 0,
+      prevX: 0,
+      prevY: 0,
+      vx: 0,
+      vy: 0,
+      speed: 0,
+      isDown: false,
+      lastTime: performance.now(),
+      active: false
+    };
+
     this.initCanvas();
     this.createGarden();
     this.bindEvents();
@@ -778,10 +844,84 @@ class DandelionGardenApp {
         this.hud.classList.remove('hud-hidden');
       }
     };
-    window.addEventListener('mousemove', registerActivity);
-    window.addEventListener('pointermove', registerActivity);
-    window.addEventListener('touchstart', registerActivity);
     window.addEventListener('keydown', registerActivity);
+
+    // One-time audio unlock on any user gesture across modern browsers
+    const unlockAudio = () => {
+      if (window.soundEngine) {
+        window.soundEngine.init();
+        window.soundEngine.resume();
+      }
+    };
+    window.addEventListener('pointerdown', unlockAudio, { once: true });
+    window.addEventListener('touchstart', unlockAudio, { once: true });
+    window.addEventListener('click', unlockAudio, { once: true });
+
+    // Pointer & Touch Wind Tracking
+    const handlePointerMove = (clientX, clientY, isDown = false) => {
+      registerActivity();
+      const now = performance.now();
+      const timeDelta = Math.max(1, now - this.pointer.lastTime);
+
+      const dx = clientX - this.pointer.prevX;
+      const dy = clientY - this.pointer.prevY;
+      const vx = (dx / timeDelta) * 1000;
+      const vy = (dy / timeDelta) * 1000;
+      const speed = Math.hypot(vx, vy);
+
+      this.pointer.vx = this.pointer.vx * 0.4 + vx * 0.6;
+      this.pointer.vy = this.pointer.vy * 0.4 + vy * 0.6;
+      this.pointer.speed = speed;
+      this.pointer.x = clientX;
+      this.pointer.y = clientY;
+      this.pointer.prevX = clientX;
+      this.pointer.prevY = clientY;
+      this.pointer.lastTime = now;
+      this.pointer.isDown = isDown;
+      this.pointer.active = true;
+
+      // Add to global wind if moving fast
+      if (speed > 120 && window.inputManager) {
+        const gestIntensity = Math.min(0.85, (speed / 1400) * (isDown ? 1.3 : 1.0));
+        window.inputManager.addGestureWind(gestIntensity);
+      }
+    };
+
+    window.addEventListener('pointermove', (e) => {
+      handlePointerMove(e.clientX, e.clientY, e.buttons > 0);
+    });
+
+    window.addEventListener('pointerdown', (e) => {
+      this.pointer.prevX = e.clientX;
+      this.pointer.prevY = e.clientY;
+      this.pointer.lastTime = performance.now();
+      handlePointerMove(e.clientX, e.clientY, true);
+    });
+
+    window.addEventListener('pointerup', () => {
+      this.pointer.isDown = false;
+    });
+
+    window.addEventListener('touchmove', (e) => {
+      if (e.touches && e.touches.length > 0) {
+        const t = e.touches[0];
+        handlePointerMove(t.clientX, t.clientY, true);
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchstart', (e) => {
+      if (e.touches && e.touches.length > 0) {
+        const t = e.touches[0];
+        this.pointer.prevX = t.clientX;
+        this.pointer.prevY = t.clientY;
+        this.pointer.lastTime = performance.now();
+        handlePointerMove(t.clientX, t.clientY, true);
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchend', () => {
+      this.pointer.isDown = false;
+    });
 
     // Serial button
     const btnSerial = document.getElementById('btn-serial');
@@ -791,7 +931,7 @@ class DandelionGardenApp {
       });
     }
 
-    // Laptop Mic button
+    // Breath Mic button
     const btnMic = document.getElementById('btn-mic');
     if (btnMic) {
       btnMic.addEventListener('click', () => {
@@ -923,10 +1063,21 @@ class DandelionGardenApp {
       }
     }
 
-    // 3. Update physics fields
+    // 3. Pointer momentum decay
+    if (this.pointer.active) {
+      this.pointer.speed *= 0.90;
+      this.pointer.vx *= 0.90;
+      this.pointer.vy *= 0.90;
+      if (this.pointer.speed < 10) {
+        this.pointer.speed = 0;
+        this.pointer.active = false;
+      }
+    }
+
+    // 4. Update physics fields
     this.windField.update(dt);
 
-    // 4. Render Scene
+    // 5. Render Scene
     // Clear screen with deep nocturnal gradient
     this.ctx.fillStyle = '#06080d';
     this.ctx.fillRect(0, 0, this.width, this.height);
@@ -939,7 +1090,7 @@ class DandelionGardenApp {
 
     // Dandelion garden
     for (const flower of this.flowers) {
-      flower.update(dt, windPower, this.windField, this.width, this.height);
+      flower.update(dt, windPower, this.windField, this.width, this.height, this.pointer);
       flower.draw(this.ctx);
     }
 

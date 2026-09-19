@@ -57,6 +57,7 @@ html, body {
   height: 100%;
   display: block;
   z-index: 1;
+  touch-action: none;
 }
 
 /* Cinematic Atmospheric Vignette */
